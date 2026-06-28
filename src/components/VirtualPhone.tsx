@@ -42,6 +42,7 @@ import {
   ActivePhoneApp, 
   AutomationStep 
 } from "../types";
+import TypewriterText from "./TypewriterText";
 
 interface VirtualPhoneProps {
   permissions: PermissionsState;
@@ -79,6 +80,15 @@ export default function VirtualPhone({
   const [inputText, setInputText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [completedTypingIds, setCompletedTypingIds] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    if (messages) {
+      messages.forEach(m => {
+        initial[m.id] = true;
+      });
+    }
+    return initial;
+  });
 
   // Authentication State (Google Sign-In)
   const [isLoggedIn, setIsLoggedIn] = useState(() => {
@@ -988,12 +998,21 @@ export default function VirtualPhone({
                               {m.role === "user" ? "You" : config.name}
                             </span>
 
-                            <div className={`max-w-[85%] p-3 rounded-2xl leading-relaxed text-xs shadow-sm ${
+                             <div className={`max-w-[85%] p-3 rounded-2xl leading-relaxed text-xs shadow-sm ${
                               m.role === "user" 
                                 ? "bg-gradient-to-tr from-cyan-950/70 to-indigo-950/70 text-cyan-50 rounded-tr-sm border border-cyan-900/50" 
                                 : "bg-slate-900 text-slate-200 rounded-tl-sm border border-slate-800"
                             }`}>
-                              <p className="font-sans break-words whitespace-pre-wrap">{m.content}</p>
+                              {m.role === "user" || completedTypingIds[m.id] ? (
+                                <p className="font-sans break-words whitespace-pre-wrap">{m.content}</p>
+                              ) : (
+                                <TypewriterText 
+                                  text={m.content} 
+                                  onComplete={() => {
+                                    setCompletedTypingIds(prev => ({ ...prev, [m.id]: true }));
+                                  }} 
+                                />
+                              )}
                             </div>
                             <span className="text-[8px] text-slate-600 font-mono mt-1 px-1">{m.timestamp}</span>
                           </div>
