@@ -409,34 +409,6 @@ export default function CompanionControls({
               </div>
             </section>
 
-            {/* Live Active Automation Logs */}
-            <section className="space-y-3 bg-slate-950/40 p-4 border border-slate-800/60 rounded-xl">
-              <div className="flex items-center gap-2 border-b border-slate-800/80 pb-1.5">
-                <Cpu className="w-4 h-4 text-amber-400" />
-                <h2 className="text-sm font-semibold text-slate-300">Device Automation Exec</h2>
-              </div>
-              <div className="bg-slate-950 rounded-lg p-3 max-h-[160px] overflow-y-auto font-mono text-[11px] space-y-1.5 custom-scrollbar border border-slate-800">
-                {automationLogs.length === 0 ? (
-                  <div className="text-slate-500 text-center py-2">No automation activity logs yet.</div>
-                ) : (
-                  automationLogs.map((log) => (
-                    <div key={log.id} className="flex items-start gap-2">
-                      <span className="text-slate-500 text-[10px] whitespace-nowrap">{log.time}</span>
-                      <div className="flex-1">
-                        <span className={
-                          log.status === "completed" ? "text-emerald-400" :
-                          log.status === "running" ? "text-cyan-400 animate-pulse" :
-                          log.status === "failed" ? "text-red-400 font-bold" : "text-slate-400"
-                        }>
-                          {log.status === "running" ? "⚡ " : log.status === "completed" ? "✓ " : log.status === "failed" ? "✗ " : "• "}
-                          {log.description}
-                        </span>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
           </>
         ) : (
           /* =======================================================

@@ -29,7 +29,22 @@ export default function App() {
   ]);
 
   const [automationLogs, setAutomationLogs] = useState<AutomationStep[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const saved = localStorage.getItem("auroza_chat_history_gemini");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error parsing chat history:", e);
+      }
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("auroza_chat_history_gemini", JSON.stringify(messages));
+  }, [messages]);
+
   const [simulateCommand, setSimulateCommand] = useState("");
   const [isSandbox, setIsSandbox] = useState(true);
   const [galleryImages, setGalleryImages] = useState<string[]>([
@@ -60,45 +75,24 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col lg:flex-row h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans select-none">
+    <div className="flex items-center justify-center h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans select-none p-4 lg:p-6">
       
-      {/* Sidebar Controls Column */}
-      <div className="w-full lg:w-[400px] xl:w-[440px] flex-shrink-0 h-[45vh] lg:h-full border-b lg:border-b-0 lg:border-r border-slate-800">
-        <CompanionControls 
-          permissions={permissions}
-          setPermissions={setPermissions}
-          config={config}
-          setConfig={setConfig}
-          memory={memory}
-          setMemory={setMemory}
-          automationLogs={automationLogs}
-          isSandbox={isSandbox}
-          onSimulateCommand={handleSimulateCommand}
-          galleryImages={galleryImages}
-          setGalleryImages={setGalleryImages}
-        />
-      </div>
-
       {/* Main Sandbox Workspace & Simulator Column */}
-      <div className="flex-1 flex flex-col h-[55vh] lg:h-full relative bg-slate-950">
+      <div className="w-full max-w-lg h-full flex flex-col relative bg-slate-900/60 border border-slate-800/80 rounded-[40px] shadow-2xl overflow-hidden backdrop-blur-sm">
         
         {/* Dynamic Context Header */}
-        <header className="px-6 py-4 border-b border-slate-900 bg-slate-950/40 flex items-center justify-between z-10">
+        <header className="px-6 py-4 border-b border-slate-900 bg-slate-950/80 flex items-center justify-between z-10">
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-5 h-5 text-cyan-400 animate-pulse" />
             <div>
-              <h2 className="text-sm font-bold text-slate-200">Auroza Virtual Screen Space</h2>
-              <p className="text-[11px] text-slate-400 font-mono">Interact directly with the Material Design 3 display</p>
+              <h2 className="text-sm font-bold text-slate-200">Auroza AI Companion</h2>
+              <p className="text-[11px] text-slate-400 font-mono">Static voice & chat interface</p>
             </div>
           </div>
-          <div className="hidden sm:flex items-center gap-4">
-            <div className="flex items-center gap-1 text-[11px] text-slate-400">
-              <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Durable Local Logs</span>
-            </div>
-            <div className="flex items-center gap-1 text-[11px] text-slate-400">
-              <Volume2 className="w-3.5 h-3.5 text-pink-400" />
-              <span>Auto TTS Synth</span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 text-[11px] text-emerald-400 bg-emerald-950/30 px-2 py-0.5 rounded-full border border-emerald-900/40">
+              <Shield className="w-3 h-3 text-emerald-400" />
+              <span>Secure</span>
             </div>
           </div>
         </header>
@@ -108,6 +102,7 @@ export default function App() {
           <VirtualPhone 
             permissions={permissions}
             config={config}
+            setConfig={setConfig}
             memory={memory}
             setMemory={setMemory}
             isSandbox={isSandbox}
@@ -122,12 +117,12 @@ export default function App() {
         </div>
 
         {/* Quick Instructions / Info Bar */}
-        <footer className="px-6 py-3 border-t border-slate-900 bg-slate-950/40 flex items-center justify-between text-xs text-slate-500">
+        <footer className="px-6 py-3 border-t border-slate-900 bg-slate-950/80 flex items-center justify-between text-[11px] text-slate-500">
           <div className="flex items-center gap-1.5">
             <Info className="w-3.5 h-3.5 text-slate-400" />
-            <span>Click the virtual app shortcuts or type questions inside the chat.</span>
+            <span>Tap microphone to talk. Offline-first speech synthesis active.</span>
           </div>
-          <span className="hidden md:inline font-mono">Auroza Core 1.0 (Google AI Studio Build)</span>
+          <span className="font-mono text-[10px]">v1.0-manual</span>
         </footer>
 
       </div>

@@ -28,7 +28,11 @@ import {
   ArrowLeft,
   ChevronRight,
   ExternalLink,
-  Sparkles
+  Sparkles,
+  MoreVertical,
+  LogOut,
+  Lock,
+  Keyboard
 } from "lucide-react";
 import { 
   Message, 
@@ -42,6 +46,7 @@ import {
 interface VirtualPhoneProps {
   permissions: PermissionsState;
   config: AssistantConfig;
+  setConfig: React.Dispatch<React.SetStateAction<AssistantConfig>>;
   memory: string[];
   setMemory: React.Dispatch<React.SetStateAction<string[]>>;
   isSandbox: boolean;
@@ -57,6 +62,7 @@ interface VirtualPhoneProps {
 export default function VirtualPhone({
   permissions,
   config,
+  setConfig,
   memory,
   setMemory,
   isSandbox,
@@ -73,6 +79,21 @@ export default function VirtualPhone({
   const [inputText, setInputText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
+
+  // Authentication State (Google Sign-In)
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    return localStorage.getItem("auroza_logged_in") === "true";
+  });
+  const [loggedInEmail, setLoggedInEmail] = useState(() => {
+    return localStorage.getItem("auroza_email") || "ssbjaan002@gmail.com";
+  });
+  const [passwordInput, setPasswordInput] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // Always-Active voice background settings (disabled)
+  const [isAlwaysActive, setIsAlwaysActive] = useState(false);
+  const [isThreeDotOpen, setIsThreeDotOpen] = useState(false);
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
   
   // Floating Bubble State
   const [isFloatingActive, setIsFloatingActive] = useState(false);
@@ -83,6 +104,7 @@ export default function VirtualPhone({
   // Web Speech API States
   const [isListening, setIsListening] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
+  const voiceTranscriptRef = useRef("");
   const recognitionRef = useRef<any>(null);
   const [speechFeedback, setSpeechFeedback] = useState("");
 
@@ -104,6 +126,13 @@ export default function VirtualPhone({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const handleUserSubmitRef = useRef<((text: string) => Promise<void>) | null>(null);
+
+  // Update ref via effect to avoid temporal dead-zone errors
+  useEffect(() => {
+    handleUserSubmitRef.current = handleUserSubmit;
+  }, [handleUserSubmit]);
 
   // Auto Scroll Chat
   useEffect(() => {
@@ -118,7 +147,9 @@ export default function VirtualPhone({
         addAutomationLog("Transferred artwork from PC Studio. Opened phone gallery.", "completed");
         clearSimulateCommand();
       } else {
-        handleUserSubmit(simulateCommand);
+        if (handleUserSubmitRef.current) {
+          handleUserSubmitRef.current(simulateCommand);
+        }
         clearSimulateCommand();
       }
     }
@@ -133,7 +164,7 @@ export default function VirtualPhone({
     }
   }, [activeScreen]);
 
-  // Initialize Web Speech Recognition with dynamic text updates
+  // Initialize Web Speech Recognition in manual-only tap-to-talk mode
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -142,7 +173,7 @@ export default function VirtualPhone({
     }
 
     const rec = new SpeechRecognition();
-    rec.continuous = true;
+    rec.continuous = false; // Stop listening automatically when speaker stops
     rec.interimResults = true;
     rec.lang = getLanguageLocale(config.language);
 
@@ -165,16 +196,19 @@ export default function VirtualPhone({
       if (textResult) {
         setInputText(textResult);
         setVoiceTranscript(textResult);
+        voiceTranscriptRef.current = textResult;
         setSpeechFeedback(`بولا گیا ٹیکسٹ: "${textResult}"`);
-      } else {
-        setSpeechFeedback("سن رہے ہیں... بولنا شروع کریں");
       }
     };
 
     rec.onerror = (e: any) => {
       console.error("Speech Recognition Error:", e);
-      if (e.error === "not-allowed") {
+      if (e.error === "no-speech") {
+        setSpeechFeedback("سن رہے ہیں... کچھ بولیے");
+      } else if (e.error === "not-allowed") {
         setSpeechFeedback("مائیکروفون کی اجازت نہیں ملی۔");
+      } else if (e.error === "network") {
+        setSpeechFeedback("انٹرنیٹ کا مسئلہ ہے۔ مائیک دوبارہ آزمائیں۔");
       } else {
         setSpeechFeedback("آواز کو ٹیکسٹ میں تبدیل کرنے میں کچھ مسئلہ ہوا۔");
       }
@@ -183,14 +217,21 @@ export default function VirtualPhone({
     };
 
     rec.onend = () => {
-      if (isListening) {
-        try {
-          rec.start();
-        } catch (err) {
-          console.debug("Speech restart ignored", err);
+      setMicPulse(false);
+      setIsListening(false);
+      
+      const speechText = voiceTranscriptRef.current.trim();
+      if (speechText) {
+        // Clear references so we don't submit twice or loop
+        voiceTranscriptRef.current = "";
+        setInputText("");
+        setVoiceTranscript("");
+        
+        if (handleUserSubmitRef.current) {
+          handleUserSubmitRef.current(speechText);
         }
       } else {
-        setMicPulse(false);
+        setSpeechFeedback("ٹاک ختم ہو گئی۔");
       }
     };
 
@@ -333,7 +374,7 @@ export default function VirtualPhone({
   }, [isDragging]);
 
   // Main input trigger processor
-  const handleUserSubmit = async (text: string) => {
+  async function handleUserSubmit(text: string) {
     if (!text.trim()) return;
     
     // 1. Add user message
@@ -390,12 +431,8 @@ export default function VirtualPhone({
           addAutomationLog(`Memory Vault updated: ${data.updateMemory}`, "completed");
         }
 
-        // Process Device Automation Plan
-        if (data.actions && data.actions.length > 0) {
-          executeAutomatedActions(data.actions);
-        } else {
-          addAutomationLog("Conversation context analyzed. No physical device automation needed.", "completed");
-        }
+        // Device automation is completely disabled in manual-only chat app mode
+        addAutomationLog("Manual Chat Mode: Automation processes bypass active.", "completed");
       }
 
     } catch (err) {
@@ -418,6 +455,9 @@ export default function VirtualPhone({
         addAutomationLog("مائیکروفون کی اجازت نہیں ملی۔ آواز کا فنکشن بلاک ہے۔", "failed");
         return;
       }
+      setInputText("");
+      setVoiceTranscript("");
+      voiceTranscriptRef.current = "";
       setIsListening(true);
       setIsFloatingActive(true);
       addAutomationLog("لائیو آواز کی ریکارڈنگ شروع کر دی گئی ہے۔", "running");
@@ -712,586 +752,451 @@ export default function VirtualPhone({
         {/* Dynamic Display Area */}
         <div className="flex-1 bg-slate-950 flex flex-col relative overflow-hidden text-slate-200">
           
-          {/* Main Simulated Screen Views */}
-          <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col relative">
-            
-            {activeScreen === "home" && (
-              <div id="screen-home" className="flex-1 flex flex-col p-4.5 space-y-4">
-                
-                {/* Material 3 Styled Top Branding Banner */}
-                <div className="flex items-center justify-between bg-slate-900/40 border border-slate-900 rounded-3xl p-3.5 shadow-sm">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center shadow-md shadow-cyan-500/10">
-                      <Sparkles className="w-4.5 h-4.5 text-slate-950" />
-                    </div>
-                    <div>
-                      <h3 className="text-xs font-mono tracking-widest text-slate-400 font-bold uppercase">Auroza v1.0</h3>
-                      <p className="text-[10px] text-cyan-400 font-medium">Material Design 3 Interface</p>
-                    </div>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <span className="text-[9px] font-medium bg-cyan-950 text-cyan-300 px-2 py-0.5 rounded-full border border-cyan-900/50">
-                      {config.language}
-                    </span>
-                    <span className="text-[9px] font-medium bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-900/50">
-                      {config.style}
-                    </span>
-                  </div>
+          {!isLoggedIn ? (
+            /* Google Sign-In Screen (Gmail Account Login) at Start */
+            <div className="flex-1 flex flex-col justify-between p-6 bg-slate-950 relative overflow-hidden">
+              {/* Background ambient lighting */}
+              <div className="absolute top-10 left-10 w-28 h-28 bg-cyan-500/10 rounded-full filter blur-2xl"></div>
+              <div className="absolute bottom-10 right-10 w-28 h-28 bg-indigo-500/10 rounded-full filter blur-2xl"></div>
+              
+              <div className="flex flex-col items-center justify-center flex-1 my-auto space-y-6 z-10 animate-fadeIn">
+                {/* Google logo colored */}
+                <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center shadow-xl p-2.5">
+                  <svg viewBox="0 0 24 24" className="w-full h-full">
+                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
+                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" fill="#FBBC05" />
+                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" fill="#EA4335" />
+                  </svg>
                 </div>
 
-                {/* Animated Central Voice Assistant Orb (The Core Feature) */}
-                <div className="flex flex-col items-center justify-center py-4 bg-slate-900/20 border border-slate-900/50 rounded-[32px] p-4 relative overflow-hidden shadow-inner">
-                  
-                  {/* Ripple Ring Wave Effects when Active */}
-                  {isListening && (
-                    <>
-                      <div className="absolute w-44 h-44 bg-cyan-500/5 rounded-full animate-ping pointer-events-none"></div>
-                      <div className="absolute w-36 h-36 bg-indigo-500/10 rounded-full animate-pulse pointer-events-none"></div>
-                    </>
-                  )}
-
-                  {/* Central interactive orb button */}
-                  <button
-                    id="central-voice-orb-btn"
-                    onClick={handleToggleMic}
-                    className={`relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-500 transform active:scale-95 shadow-2xl ${
-                      isListening
-                        ? "bg-gradient-to-tr from-cyan-400 via-indigo-500 to-pink-500 scale-105 shadow-cyan-500/30"
-                        : "bg-slate-900 border-2 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white hover:shadow-slate-800/10"
-                    }`}
-                  >
-                    {/* Glowing outer aura */}
-                    <div className={`absolute inset-0.5 rounded-full bg-slate-950/10 backdrop-blur-sm transition-all duration-300 ${isListening ? "opacity-0" : "opacity-100"}`}></div>
-                    
-                    <div className="z-10 flex flex-col items-center justify-center">
-                      {isListening ? (
-                        <div className="relative">
-                          <span className="absolute -top-1 -right-1 flex h-2 w-2">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
-                          </span>
-                          <Mic className="w-8 h-8 text-slate-950 animate-pulse" />
-                        </div>
-                      ) : (
-                        <Mic className="w-7 h-7 text-cyan-400 hover:text-cyan-300 transition-colors" />
-                      )}
-                    </div>
-                  </button>
-
-                  {/* Voice Status & Indicator text */}
-                  <div className="mt-3 text-center z-10">
-                    <p className={`text-xs font-bold transition-colors ${isListening ? "text-cyan-400 animate-pulse" : "text-slate-300"}`}>
-                      {isListening ? "سن رہا ہوں... بولنا شروع کریں" : "ٹیپ کر کے بات کریں"}
-                    </p>
-                    <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-                      {isListening ? "Live Web Speech Recognition" : "Web Speech API Activated"}
-                    </p>
-                  </div>
+                <div className="text-center space-y-1">
+                  <h2 className="text-sm font-extrabold text-slate-100 tracking-tight">Sign in with Google</h2>
+                  <p className="text-[10px] text-slate-400 max-w-[240px] mx-auto leading-relaxed font-sans">
+                    Auroza AI کا استعمال شروع کرنے کے لیے اپنے Gmail اکاؤنٹ سے لاگ ان کریں۔
+                  </p>
                 </div>
 
-                {/* Live Message History / Conversations List (Directly on Home) */}
-                <div className="bg-slate-900/30 border border-slate-900 rounded-[28px] p-3.5 flex-1 flex flex-col space-y-2">
-                  <div className="flex items-center justify-between border-b border-slate-900/80 pb-2">
-                    <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-bold">حالیہ گفتگو (Recent Chat)</span>
-                    <button 
-                      onClick={() => setActiveScreen("history")}
-                      className="text-[10px] font-medium text-cyan-400 hover:underline flex items-center gap-1"
-                    >
-                      پوری ہسٹری <ChevronRight className="w-3 h-3" />
-                    </button>
-                  </div>
-
-                  <div className="flex-1 overflow-y-auto space-y-2.5 max-h-[140px] pr-1 custom-scrollbar">
-                    {messages.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center py-4 text-center">
-                        <MessageSquare className="w-5 h-5 text-slate-600 mb-1" />
-                        <p className="text-[11px] text-slate-500">ابھی کوئی بات چیت نہیں ہوئی۔ نیچے سے ٹائپ کریں یا اوپر مائیک کو دبائیں۔</p>
-                      </div>
-                    ) : (
-                      messages.slice(-3).map((m) => (
-                        <div key={m.id} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
-                          <div className={`max-w-[85%] p-2.5 rounded-[20px] text-xs leading-relaxed ${
-                            m.role === "user" 
-                              ? "bg-cyan-950/75 text-cyan-100 rounded-tr-sm border border-cyan-900/40" 
-                              : "bg-slate-900 text-slate-200 rounded-tl-sm border border-slate-800"
-                          }`}>
-                            <p className="font-sans break-words">{m.content}</p>
-                          </div>
-                          <span className="text-[8px] text-slate-600 font-mono mt-0.5 px-1">{m.timestamp}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                {/* Horizontal Drawer: Android App shortcuts */}
-                <div>
-                  <h4 className="text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-2 font-bold px-1">ایپس اور ٹولز (Simulated Apps)</h4>
-                  <div className="flex gap-2.5 overflow-x-auto pb-2 px-1 custom-scrollbar">
-                    {[
-                      { id: "whatsapp", label: "WhatsApp", icon: MessageSquare, color: "bg-emerald-500/10 text-emerald-400 border-emerald-950" },
-                      { id: "youtube", label: "YouTube", icon: Youtube, color: "bg-red-500/10 text-red-400 border-red-950" },
-                      { id: "ecommerce", label: "Shopping", icon: Compass, color: "bg-amber-500/10 text-amber-400 border-amber-950" },
-                      { id: "dialer", label: "Phone", icon: Phone, color: "bg-cyan-500/10 text-cyan-400 border-cyan-950" },
-                      { id: "camera", label: "Camera", icon: Camera, color: "bg-indigo-500/10 text-indigo-400 border-indigo-950" },
-                      { id: "gallery", label: "Photos", icon: ImageIcon, color: "bg-pink-500/10 text-pink-400 border-pink-950" },
-                      { id: "settings", label: "Settings", icon: SettingsIcon, color: "bg-slate-900 text-slate-300 border-slate-800" }
-                    ].map((app) => (
-                      <button 
-                        key={app.id} 
-                        id={`phone-app-btn-${app.id}`}
-                        onClick={() => {
-                          setActiveScreen(app.id as ActivePhoneApp);
-                          addAutomationLog(`Launched simulated ${app.label} app.`, "completed");
-                        }}
-                        className="flex flex-col items-center flex-shrink-0 space-y-1.5"
-                      >
-                        <div className={`w-11 h-11 ${app.color} border rounded-2xl flex items-center justify-center shadow-sm transition transform active:scale-95 hover:brightness-110`}>
-                          <app.icon className="w-5 h-5" />
-                        </div>
-                        <span className="text-[9px] font-medium text-slate-400 truncate max-w-[56px] text-center">{app.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Material Checklist Card: Reminders */}
-                <div className="bg-slate-900/40 border border-slate-900 rounded-[28px] p-3 space-y-2">
-                  <div className="flex items-center justify-between px-1">
-                    <div className="flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-pink-400" />
-                      <span className="text-[11px] font-bold text-slate-300">الارمز اور یاد دہانیاں (Alarms)</span>
-                    </div>
-                    <span className="text-[8px] font-mono px-1.5 py-0.5 bg-slate-950 text-pink-400 rounded-full border border-pink-950">Active</span>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-2">
-                    {reminders.slice(0, 2).map((rem) => (
-                      <div key={rem.id} className="flex items-center justify-between bg-slate-950 p-2 rounded-xl text-[10px] border border-slate-900">
-                        <span className={`truncate text-slate-300 ${rem.done ? "line-through text-slate-500" : ""}`}>{rem.title}</span>
-                        <input 
-                          type="checkbox" 
-                          checked={rem.done} 
-                          onChange={() => setReminders(prev => prev.map(r => r.id === rem.id ? { ...r, done: !r.done } : r))}
-                          className="rounded-md border-slate-850 text-pink-500 focus:ring-pink-500 w-3.5 h-3.5" 
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Simulated WhatsApp Drawer */}
-            {activeScreen === "whatsapp" && (
-              <div id="screen-whatsapp" className="flex-1 flex flex-col">
-                <div className="bg-emerald-950/80 px-4 py-3 flex items-center justify-between border-b border-emerald-800/50">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setActiveScreen("home")} className="text-emerald-400">
-                      <ArrowLeft className="w-4 h-4" />
-                    </button>
-                    <div>
-                      <h3 className="text-xs font-bold text-emerald-100">WhatsApp Automation</h3>
-                      <p className="text-[9px] text-emerald-400">Auroza Automated Text Agent</p>
-                    </div>
-                  </div>
-                  <MessageSquare className="w-4 h-4 text-emerald-400" />
-                </div>
-                <div className="p-4 space-y-4 flex-1 flex flex-col justify-between">
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-[10px] font-mono text-slate-400 uppercase tracking-wider mb-1">To (Contact / Name / Phone)</label>
-                      <input 
-                        id="whatsapp-contact-input"
-                        type="text" 
-                        value={smsContact}
-                        onChange={(e) => setSmsContact(e.target.value)}
-                        placeholder="e.g., Dad, Ahmed, or +923001234567"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-emerald-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-mono text-slate-400 uppercase tracking-wider mb-1">Message Text</label>
-                      <textarea 
-                        id="whatsapp-msg-textarea"
-                        rows={3}
-                        value={smsText}
-                        onChange={(e) => setSmsText(e.target.value)}
-                        placeholder="What should Auroza type?"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-emerald-500 resize-none"
-                      />
-                    </div>
-                  </div>
-                  <button 
-                    id="whatsapp-send-sms-btn"
-                    onClick={() => {
-                      if (!smsContact || !smsText) {
-                        alert("Contact name and message body must be present!");
-                        return;
-                      }
-                      addAutomationLog(`Sending WhatsApp message to ${smsContact}: "${smsText}"`, "running");
-                      setTimeout(() => {
-                        alert(`[WhatsApp Automation API] Simulated message dispatched to ${smsContact}!`);
-                        addAutomationLog(`WhatsApp chat sent successfully.`, "completed");
-                        setSmsText("");
-                      }, 1000);
-                    }}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-slate-100 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 transition"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>Send Message</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Simulated YouTube Screen */}
-            {activeScreen === "youtube" && (
-              <div id="screen-youtube" className="flex-1 flex flex-col bg-slate-950">
-                <div className="bg-red-950/60 px-4 py-3 flex items-center justify-between border-b border-red-950/80">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setActiveScreen("home")} className="text-red-400">
-                      <ArrowLeft className="w-4 h-4" />
-                    </button>
-                    <h3 className="text-xs font-bold text-red-100">YouTube Assistant</h3>
-                  </div>
-                  <Youtube className="w-4 h-4 text-red-500 animate-pulse" />
-                </div>
-                <div className="p-4 space-y-3 flex-1 flex flex-col justify-between">
-                  <div className="space-y-3">
-                    <div className="flex gap-2">
-                      <input 
-                        id="youtube-search-input"
-                        type="text"
-                        placeholder="Search songs, tutorials, trailers..."
-                        value={youtubeQuery}
-                        onChange={(e) => setYoutubeQuery(e.target.value)}
-                        className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-red-500"
-                      />
-                      <button 
-                        id="youtube-search-btn"
-                        onClick={() => {
-                          addAutomationLog(`YouTube scraper searching for: "${youtubeQuery}"`, "completed");
-                        }}
-                        className="bg-red-600 text-white px-3 py-1 text-xs rounded-lg"
-                      >
-                        Search
-                      </button>
-                    </div>
-
-                    {/* YouTube Video Simulated Iframe / Content */}
-                    <div className="bg-slate-900 border border-slate-850 rounded-xl aspect-video flex flex-col items-center justify-center p-4 text-center">
-                      <Youtube className="w-10 h-10 text-red-500 mb-2" />
-                      <p className="text-xs font-bold text-slate-200 truncate w-full">
-                        {youtubeQuery ? `Playing: ${youtubeQuery}` : "Search or request video automation"}
-                      </p>
-                      <p className="text-[10px] text-slate-500 mt-1">Virtual Android stream rendering</p>
-                    </div>
-                  </div>
-                  
-                  {youtubeQuery && (
-                    <a 
-                      href={`https://www.youtube.com/results?search_query=${encodeURIComponent(youtubeQuery)}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="w-full bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 transition"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5 text-red-500" />
-                      <span>Launch Live on YouTube</span>
-                    </a>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Simulated Shopping / E-commerce Screen */}
-            {activeScreen === "ecommerce" && (
-              <div id="screen-ecommerce" className="flex-1 flex flex-col">
-                <div className="bg-slate-900 px-4 py-3 flex items-center justify-between border-b border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setActiveScreen("home")} className="text-slate-400">
-                      <ArrowLeft className="w-4 h-4" />
-                    </button>
-                    <h3 className="text-xs font-bold text-slate-100">Shop Automator</h3>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button 
-                      onClick={() => setEcommercePlatform("Amazon")}
-                      className={`text-[10px] px-2 py-0.5 rounded font-bold ${ecommercePlatform === "Amazon" ? "bg-amber-500 text-slate-950" : "bg-slate-800 text-slate-400"}`}
-                    >
-                      Amazon
-                    </button>
-                    <button 
-                      onClick={() => setEcommercePlatform("Daraz")}
-                      className={`text-[10px] px-2 py-0.5 rounded font-bold ${ecommercePlatform === "Daraz" ? "bg-orange-500 text-white" : "bg-slate-800 text-slate-400"}`}
-                    >
-                      Daraz
-                    </button>
-                  </div>
-                </div>
-                <div className="p-4 space-y-4 flex-1">
-                  <div className="flex gap-2">
+                <div className="w-full space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-mono text-cyan-400 uppercase tracking-wider ml-1">Gmail اکاؤنٹ</label>
                     <input 
-                      id="ecommerce-item-input"
-                      type="text"
-                      placeholder="Search phones, clothes, gadgets..."
-                      value={ecommerceQuery}
-                      onChange={(e) => setEcommerceQuery(e.target.value)}
-                      className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none"
+                      type="email" 
+                      value={loggedInEmail}
+                      onChange={(e) => setLoggedInEmail(e.target.value)}
+                      placeholder="ssbjaan002@gmail.com" 
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 font-sans"
                     />
                   </div>
 
-                  <div className="bg-slate-900 rounded-xl p-4 border border-slate-850 space-y-3">
-                    <h4 className="text-xs font-mono font-bold text-slate-300">Autopilot Search Result:</h4>
-                    {ecommerceQuery ? (
-                      <div className="space-y-2">
-                        <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/80 flex justify-between items-center text-xs">
-                          <div>
-                            <p className="font-bold text-slate-200">Simulated {ecommerceQuery}</p>
-                            <p className="text-[10px] text-slate-500">Platform: {ecommercePlatform}</p>
-                          </div>
-                          <span className="text-emerald-400 font-bold font-mono">$129.99</span>
-                        </div>
-                        <a 
-                          href={ecommercePlatform === "Amazon" 
-                            ? `https://www.amazon.com/s?k=${encodeURIComponent(ecommerceQuery)}` 
-                            : `https://www.daraz.pk/catalog/?q=${encodeURIComponent(ecommerceQuery)}`
-                          }
-                          target="_blank" 
-                          rel="noreferrer"
-                          className="text-xs text-cyan-400 hover:underline flex items-center gap-1.5 mt-2"
-                        >
-                          <span>Open full listing on {ecommercePlatform}</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-500">Ask Auroza to look up products on Daraz or Amazon.</p>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-mono text-cyan-400 uppercase tracking-wider ml-1">پاس ورڈ (Password)</label>
+                    <div className="relative">
+                      <input 
+                        type="password" 
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        placeholder="••••••••" 
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
+                      />
+                      <span className="absolute right-3 top-2.5">
+                        <Lock className="w-3.5 h-3.5 text-slate-600" />
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Android Permissions status */}
+                  <div className="p-2.5 bg-cyan-950/25 border border-cyan-900/40 rounded-xl text-[9px] text-cyan-300 leading-relaxed flex items-start gap-2">
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-[10px]">Android Permissions: Always Allowed</p>
+                      <p className="text-slate-400 mt-0.5">سیکیورٹی پالیسی کے مطابق مائیک اور کیمرے کی تمام اجازتیں خود کار طور پر ہمیشہ کے لیے فعال (Allowed) ہیں۔</p>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  id="google-signin-btn"
+                  disabled={authLoading}
+                  onClick={() => {
+                    if (!loggedInEmail.trim()) {
+                      alert("براہ کرم اپنا ای میل درج کریں!");
+                      return;
+                    }
+                    setAuthLoading(true);
+                    addAutomationLog("Authenticating user via Google Accounts flow...", "running");
+                    setTimeout(() => {
+                      localStorage.setItem("auroza_logged_in", "true");
+                      localStorage.setItem("auroza_email", loggedInEmail);
+                      setIsLoggedIn(true);
+                      setAuthLoading(false);
+                      addAutomationLog(`Google login approved for: ${loggedInEmail}`, "completed");
+                    }, 1200);
+                  }}
+                  className="w-full py-2.5 bg-white text-slate-950 hover:bg-slate-100 font-extrabold rounded-xl text-xs transition transform active:scale-95 shadow-md flex items-center justify-center gap-2"
+                >
+                  {authLoading ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></span>
+                      <span>لاگ ان ہو رہا ہے...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5">
+                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
+                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" fill="#FBBC05" />
+                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" fill="#EA4335" />
+                      </svg>
+                      <span>Gmail اکاؤنٹ سے مربوط کریں</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="text-center pt-3 border-t border-slate-900 flex items-center justify-center gap-1 text-[10px] text-slate-500 font-mono">
+                <Lock className="w-3 h-3 text-emerald-500" />
+                <span>Google Secure Auth Gate</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Immersive ChatGPT/Gemini Header */}
+              <div className="px-4 py-3 border-b border-slate-900 bg-slate-950/90 backdrop-blur flex items-center justify-between z-30 select-none relative">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-cyan-400 via-indigo-500 to-pink-500 flex items-center justify-center animate-pulse">
+                    <Sparkles className="w-3.5 h-3.5 text-slate-950" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-extrabold text-slate-100 tracking-wide">Auroza v1.0</h3>
+                    {isAlwaysActive && (
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-900/30 animate-pulse">
+                        Always-Active Mic ON
+                      </span>
                     )}
                   </div>
                 </div>
-              </div>
-            )}
 
-            {/* Simulated Dialer Screen */}
-            {activeScreen === "dialer" && (
-              <div id="screen-dialer" className="flex-1 flex flex-col justify-between p-5 bg-slate-950">
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setActiveScreen("home")} className="text-slate-400">
-                    <ArrowLeft className="w-4 h-4" />
+                {/* Top Right Action Dropdown */}
+                <div className="flex items-center gap-1.5 relative">
+                  <span className="hidden xs:inline-block text-[9px] text-slate-500 font-mono truncate max-w-[110px]">
+                    {loggedInEmail}
+                  </span>
+                  
+                  <button 
+                    id="header-three-dot-menu-btn"
+                    onClick={() => setIsThreeDotOpen(!isThreeDotOpen)}
+                    className="p-1.5 hover:bg-slate-900 text-slate-400 hover:text-white rounded-lg transition"
+                    title="Menu & Sync"
+                  >
+                    <MoreVertical className="w-4 h-4" />
                   </button>
-                  <h3 className="text-xs font-bold text-slate-100">Phone Caller</h3>
-                </div>
 
-                <div className="text-center space-y-2 py-4">
-                  <p className="text-[11px] font-mono tracking-widest text-slate-500">DIALING NETWORK</p>
-                  <h2 className="text-2xl font-mono font-bold text-slate-200 tracking-wider">
-                    {phoneDialNum || "Enter Number"}
-                  </h2>
-                  {activeCallContact && (
-                    <p className="text-xs font-sans text-cyan-400 font-medium">Calling: {activeCallContact}</p>
+                  {/* Settings & History Dropdown */}
+                  {isThreeDotOpen && (
+                    <div className="absolute right-0 top-10 w-52 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 p-1.5">
+                      <div className="px-3 py-2 border-b border-slate-800/80">
+                        <p className="text-[10px] text-slate-400 font-mono leading-tight">سائن ان اکاؤنٹ</p>
+                        <p className="text-[11px] font-bold text-slate-200 truncate">{loggedInEmail}</p>
+                        <div className="flex items-center gap-1 mt-1 text-[8px] text-emerald-400 font-mono">
+                          <Check className="w-3 h-3" />
+                          <span>Permissions: Always Allowed</span>
+                        </div>
+                      </div>
+
+                      <div className="py-1">
+                        <button 
+                          onClick={() => {
+                            if (confirm("کیا آپ واقعی گفتگو صاف کرنا چاہتے ہیں؟")) {
+                              setMessages([]);
+                              addAutomationLog("Conversation timeline reset successfully.", "completed");
+                            }
+                            setIsThreeDotOpen(false);
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 rounded-lg transition text-left"
+                        >
+                          <X className="w-3.5 h-3.5 text-pink-400" />
+                          <span>ہسٹری صاف کریں</span>
+                        </button>
+
+                        <button 
+                          onClick={() => {
+                            localStorage.removeItem("auroza_logged_in");
+                            setIsLoggedIn(false);
+                            setIsThreeDotOpen(false);
+                            addAutomationLog("Signed out from Google account.", "completed");
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 rounded-lg transition text-left mt-1 border-t border-slate-800/60"
+                        >
+                          <LogOut className="w-3.5 h-3.5" />
+                          <span>لاگ آؤٹ کریں</span>
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
-
-                {/* Dialpad Sim */}
-                <div className="grid grid-cols-3 gap-3 max-w-[240px] mx-auto">
-                  {["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"].map((num) => (
-                    <button 
-                      key={num}
-                      onClick={() => setPhoneDialNum(prev => prev + num)}
-                      className="w-12 h-12 rounded-full bg-slate-900 hover:bg-slate-800 font-mono text-base font-bold text-slate-300 flex items-center justify-center transition active:scale-90"
-                    >
-                      {num}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex justify-center gap-4 pt-4">
-                  <button 
-                    onClick={() => {
-                      if (!phoneDialNum) return;
-                      addAutomationLog(`Calling ${phoneDialNum}...`, "running");
-                      setTimeout(() => {
-                        alert(`[Dialer Simulation] Connecting call to ${phoneDialNum}...`);
-                        addAutomationLog(`Call answered successfully by simulated peer.`, "completed");
-                      }, 1000);
-                    }}
-                    className="w-14 h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full flex items-center justify-center transition active:scale-90"
-                  >
-                    <Phone className="w-6 h-6" />
-                  </button>
-                  <button 
-                    onClick={() => {
-                      setPhoneDialNum("");
-                      setActiveCallContact(null);
-                    }}
-                    className="w-14 h-14 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center transition active:scale-90"
-                  >
-                    <MicOff className="w-6 h-6" />
-                  </button>
-                </div>
               </div>
-            )}
 
-            {/* Simulated Live Camera with Vision snap capabilities */}
-            {activeScreen === "camera" && (
-              <div id="screen-camera" className="flex-1 flex flex-col bg-black">
-                <div className="px-4 py-3 flex items-center justify-between border-b border-slate-900 z-10 bg-slate-950">
-                  <button onClick={() => {
-                    stopCamera();
-                    setActiveScreen("home");
-                  }} className="text-slate-400">
-                    <ArrowLeft className="w-4 h-4" />
-                  </button>
-                  <h3 className="text-xs font-bold text-slate-100">Auroza Lens Vision</h3>
-                  <div className="w-2 h-2 rounded-full bg-red-500 animate-ping"></div>
-                </div>
-
-                <div className="flex-1 relative bg-slate-950 flex items-center justify-center overflow-hidden">
-                  <video 
-                    ref={videoRef} 
-                    autoPlay 
-                    playsInline 
-                    className="w-full h-full object-cover absolute inset-0"
-                  />
+              {/* Main Simulated Screen Views */}
+              <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col relative bg-slate-950">
+                
+                <div id="screen-home" className="flex-1 flex flex-col p-4 space-y-4">
                   
-                  {/* Digital Lens overlay */}
-                  <div className="absolute inset-4 border border-cyan-500/20 rounded-2xl pointer-events-none flex items-center justify-center">
-                    <div className="w-8 h-8 border-t-2 border-l-2 border-cyan-400 absolute top-0 left-0 rounded-tl"></div>
-                    <div className="w-8 h-8 border-t-2 border-r-2 border-cyan-400 absolute top-0 right-0 rounded-tr"></div>
-                    <div className="w-8 h-8 border-b-2 border-l-2 border-cyan-400 absolute bottom-0 left-0 rounded-bl"></div>
-                    <div className="w-8 h-8 border-b-2 border-r-2 border-cyan-400 absolute bottom-0 right-0 rounded-br"></div>
-                  </div>
-
-                  <div className="absolute bottom-4 left-4 right-4 bg-slate-900/90 backdrop-blur border border-slate-800 p-2 rounded-xl text-center">
-                    <p className="text-[10px] text-slate-300 font-mono">
-                      {isSandbox ? "Sandbox Lens ready. Press Capture to send to AI." : "Press capture to analyze feed with Gemini Vision."}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="p-4 bg-slate-950 flex justify-center items-center gap-6">
-                  <button 
-                    onClick={() => {
-                      setActiveScreen("gallery");
-                    }}
-                    className="w-10 h-10 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300"
-                  >
-                    <ImageIcon className="w-5 h-5" />
-                  </button>
-                  <button 
-                    id="camera-shutter-btn"
-                    onClick={handleCapturePhoto}
-                    className="w-16 h-16 rounded-full border-4 border-slate-100 bg-red-600 hover:bg-red-700 active:scale-95 transition flex items-center justify-center"
-                  >
-                    <span className="w-6 h-6 rounded-full bg-white"></span>
-                  </button>
-                  <button 
-                    onClick={() => setActiveScreen("home")}
-                    className="w-10 h-10 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300"
-                  >
-                    <Home className="w-5 h-5" />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Gallery / Photos Screen */}
-            {activeScreen === "gallery" && (
-              <div id="screen-gallery" className="flex-1 flex flex-col bg-slate-950">
-                <div className="px-4 py-3 flex items-center justify-between border-b border-slate-900 bg-slate-950">
-                  <button onClick={() => setActiveScreen("home")} className="text-slate-400">
-                    <ArrowLeft className="w-4 h-4" />
-                  </button>
-                  <h3 className="text-xs font-bold text-slate-100">Gallery Assets</h3>
-                  <ImageIcon className="w-4 h-4 text-pink-400" />
-                </div>
-                <div className="p-4 grid grid-cols-2 gap-3 overflow-y-auto">
-                  {galleryImages.map((img, i) => (
-                    <div key={i} className="group relative aspect-square rounded-xl overflow-hidden border border-slate-800 bg-slate-900">
-                      <img src={img} alt="Gallery item" className="w-full h-full object-cover" />
-                      <button 
-                        onClick={async () => {
-                          setCapturedImage(img);
-                          addAutomationLog(`Sending asset ${i + 1} to Vision agent...`, "pending");
-                          try {
-                            const response = await fetch("/api/auroza/vision", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({
-                                imageBase64: img,
-                                prompt: "Describe what is in this gallery photo",
-                                assistantName: config.name,
-                                language: config.language
-                              })
-                            });
-                            const data = await response.json();
-                            if (data.message) {
-                              setMessages(prev => [...prev, {
-                                id: Date.now().toString(),
-                                role: "assistant",
-                                content: `🖼️ **Visual Asset Analysis:**\n\n${data.message}`,
-                                timestamp: new Date().toLocaleTimeString()
-                              }]);
-                              speakText(data.message);
-                              addAutomationLog("Gallery asset analyzed successfully.", "completed");
-                            }
-                          } catch {
-                            addAutomationLog("Asset analyzer processing failed.", "failed");
-                          }
-                        }}
-                        className="absolute inset-0 bg-slate-950/70 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center text-[11px] text-pink-300 font-bold transition duration-200"
-                      >
-                        <Search className="w-4 h-4 mb-1" />
-                        <span>Analyze Visual</span>
-                      </button>
+                  {/* Material 3 Styled Top Branding Banner */}
+                  <div className="flex items-center justify-between bg-slate-900/40 border border-slate-900 rounded-3xl p-3.5 shadow-sm">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center shadow-md shadow-cyan-500/10">
+                        <Sparkles className="w-4.5 h-4.5 text-slate-950" />
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-mono tracking-widest text-slate-400 font-bold uppercase">Auroza Chat</h3>
+                        <p className="text-[10px] text-cyan-400 font-medium">Static Chat Interface</p>
+                      </div>
                     </div>
-                  ))}
+                    <div className="flex gap-1.5">
+                      <span className="text-[9px] font-medium bg-cyan-950 text-cyan-300 px-2 py-0.5 rounded-full border border-cyan-900/50">
+                        {config.language}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Dynamic Conversations Stream / Gemini Message Bubbles List */}
+                  <div className="flex-1 overflow-y-auto space-y-4 px-1 pr-1.5 custom-scrollbar min-h-[220px]">
+                    {messages.length === 0 ? (
+                      /* Minimalist Distraction-Free Empty Chat Area */
+                      <div className="flex-1 h-full flex flex-col items-center justify-center py-12 space-y-4 select-none animate-fadeIn">
+                        <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800/60 flex items-center justify-center shadow-lg text-cyan-400">
+                          <Sparkles className="w-6 h-6 animate-pulse" />
+                        </div>
+                        <div className="text-center space-y-1">
+                          <p className="text-xs font-bold text-slate-300 font-sans tracking-wide">Auroza AI</p>
+                          <p className="text-[10px] text-slate-500 font-sans">گفتگو شروع کرنے کے لیے مائیک کو دبائیں</p>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Bubble Chat Layout (ChatGPT/Gemini Style) */
+                      <div className="space-y-4 flex flex-col pt-2">
+                        {messages.map((m) => (
+                          <div 
+                            key={m.id} 
+                            className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"} animate-fadeIn`}
+                          >
+                            {/* Name Header above bubble */}
+                            <span className={`text-[9px] font-mono tracking-wider mb-1 px-1 font-bold ${
+                              m.role === "user" ? "text-cyan-400" : "text-indigo-400"
+                            }`}>
+                              {m.role === "user" ? "You" : config.name}
+                            </span>
+
+                            <div className={`max-w-[85%] p-3 rounded-2xl leading-relaxed text-xs shadow-sm ${
+                              m.role === "user" 
+                                ? "bg-gradient-to-tr from-cyan-950/70 to-indigo-950/70 text-cyan-50 rounded-tr-sm border border-cyan-900/50" 
+                                : "bg-slate-900 text-slate-200 rounded-tl-sm border border-slate-800"
+                            }`}>
+                              <p className="font-sans break-words whitespace-pre-wrap">{m.content}</p>
+                            </div>
+                            <span className="text-[8px] text-slate-600 font-mono mt-1 px-1">{m.timestamp}</span>
+                          </div>
+                        ))}
+
+                        {/* AI Typing Indicator */}
+                        {isTyping && (
+                          <div className="flex flex-col items-start animate-fadeIn">
+                            <span className="text-[9px] font-mono tracking-wider mb-1 px-1 font-bold text-indigo-400">
+                              {config.name}
+                            </span>
+                            <div className="bg-slate-900 border border-slate-800 p-3 rounded-2xl rounded-tl-sm shadow-sm">
+                              <div className="flex items-center space-x-1.5 px-1 py-0.5">
+                                <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                                <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                                <div className="w-1.5 h-1.5 bg-pink-400 rounded-full animate-bounce"></div>
+                              </div>
+                            </div>
+                            <span className="text-[8px] text-slate-600 font-mono mt-1 px-1">Typing...</span>
+                          </div>
+                        )}
+
+                        {/* User Typing or Speaking Indicator */}
+                        {isListening && (
+                          <div className="flex flex-col items-end animate-fadeIn">
+                            <span className="text-[9px] font-mono tracking-wider mb-1 px-1 font-bold text-cyan-400">
+                              You
+                            </span>
+                            <div className="bg-gradient-to-tr from-cyan-950/50 to-indigo-950/50 border border-cyan-900/30 p-2.5 rounded-2xl rounded-tr-sm shadow-sm">
+                              <div className="flex items-center gap-2">
+                                <span className="flex h-2 w-2 relative">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+                                </span>
+                                <span className="text-[10px] text-cyan-300 font-sans italic">Listening to voice...</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+
+
 
             {/* Simulated Settings Panel */}
             {activeScreen === "settings" && (
-              <div id="screen-settings" className="flex-1 flex flex-col bg-slate-950 p-4 space-y-4">
-                <div className="flex items-center gap-2 pb-2 border-b border-slate-800">
-                  <button onClick={() => setActiveScreen("home")} className="text-slate-400">
+              <div id="screen-settings" className="flex-1 flex flex-col bg-slate-950 p-4 space-y-4 overflow-y-auto custom-scrollbar">
+                <div className="flex items-center gap-2 pb-2 border-b border-slate-900">
+                  <button onClick={() => setActiveScreen("home")} className="text-slate-400 hover:text-slate-200 transition">
                     <ArrowLeft className="w-4 h-4" />
                   </button>
-                  <h3 className="text-xs font-bold text-slate-100">Android System Emulator</h3>
+                  <h3 className="text-xs font-bold text-slate-100 uppercase tracking-wider">Auroza Personalization</h3>
                 </div>
 
-                <div className="space-y-3">
-                  <div className="bg-slate-900 rounded-xl p-3 border border-slate-800 space-y-2">
-                    <h4 className="text-xs font-mono font-bold text-cyan-400">Environment Metadata</h4>
-                    <div className="text-[10px] space-y-1 font-mono text-slate-400">
-                      <p>• Model: models/gemini-3.5-flash</p>
-                      <p>• Micro-engine latency: &lt;120ms</p>
-                      <p>• Voice feedback: Enabled</p>
-                      <p>• Continuous listening: Active (Web Speech API)</p>
+                <div className="space-y-4">
+                  {/* AI Identity Config */}
+                  <div className="bg-slate-900/60 rounded-2xl p-4 border border-slate-800/80 space-y-3">
+                    <h4 className="text-xs font-bold text-cyan-400 flex items-center gap-1.5 uppercase tracking-wide">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>AI Profile Identity</span>
+                    </h4>
+
+                    <div className="space-y-2.5">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">Assistant Name</label>
+                        <input 
+                          type="text" 
+                          value={config.name}
+                          onChange={(e) => setConfig(prev => ({ ...prev, name: e.target.value }))}
+                          placeholder="Assistant Name"
+                          className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 font-sans"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">Language</label>
+                          <select 
+                            value={config.language}
+                            onChange={(e) => setConfig(prev => ({ ...prev, language: e.target.value }))}
+                            className="w-full bg-slate-950 border border-slate-850 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
+                          >
+                            <option value="English">English</option>
+                            <option value="Urdu">Urdu (اردو)</option>
+                            <option value="Hindi">Hindi (हिंदी)</option>
+                            <option value="Sindhi">Sindhi (سنڌي)</option>
+                            <option value="Arabic">Arabic (العربية)</option>
+                            <option value="Spanish">Spanish</option>
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">Vocal Voice</label>
+                          <select 
+                            value={config.voice}
+                            onChange={(e) => setConfig(prev => ({ ...prev, voice: e.target.value }))}
+                            className="w-full bg-slate-950 border border-slate-850 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
+                          >
+                            <option value="Zephyr">Zephyr (Default)</option>
+                            <option value="Nova">Nova</option>
+                            <option value="Echo">Echo</option>
+                            <option value="Alloy">Alloy</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">Personality Style</label>
+                        <select 
+                          value={config.style}
+                          onChange={(e) => setConfig(prev => ({ ...prev, style: e.target.value }))}
+                          className="w-full bg-slate-950 border border-slate-850 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
+                        >
+                          <option value="Warm">Warm & Empathetic</option>
+                          <option value="Professional">Professional & Precise</option>
+                          <option value="Energetic">Energetic & Fun</option>
+                          <option value="Casual">Casual & Relaxed</option>
+                        </select>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="bg-slate-900 rounded-xl p-3 border border-slate-800 space-y-1">
-                    <h4 className="text-xs font-sans font-bold text-slate-200">Device Hardware Specs</h4>
-                    <div className="text-[10px] text-slate-400 space-y-1">
-                      <div className="flex justify-between"><span>CPU Core load</span><span className="text-emerald-400 font-mono">14%</span></div>
-                      <div className="flex justify-between"><span>RAM Allocated</span><span className="text-emerald-400 font-mono">512MB</span></div>
-                      <div className="flex justify-between"><span>API Gateway</span><span className="text-cyan-400 font-mono">Active</span></div>
+                  {/* Cognitive Memory Vault */}
+                  <div className="bg-slate-900/60 rounded-2xl p-4 border border-slate-800/80 space-y-3">
+                    <h4 className="text-xs font-bold text-indigo-400 flex items-center gap-1.5 uppercase tracking-wide">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                      <span>Cognitive Memory Vault</span>
+                    </h4>
+
+                    {/* Memory List */}
+                    <div className="space-y-1.5 max-h-36 overflow-y-auto custom-scrollbar pr-1">
+                      {memory.length === 0 ? (
+                        <p className="text-[10px] text-slate-500 font-sans italic text-center py-2">Memory database is currently empty.</p>
+                      ) : (
+                        memory.map((m, index) => (
+                          <div key={index} className="flex items-center justify-between bg-slate-950/80 border border-slate-850 p-2 rounded-xl">
+                            <p className="text-[10px] text-slate-300 font-sans leading-relaxed break-words flex-1 pr-2">{m}</p>
+                            <button 
+                              onClick={() => {
+                                setMemory(prev => prev.filter((_, i) => i !== index));
+                                addAutomationLog(`Memory fact deleted from vault.`, "completed");
+                              }}
+                              className="text-slate-500 hover:text-red-400 transition"
+                              title="Delete memory block"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))
+                      )}
                     </div>
+
+                    {/* Add Custom Memory Input */}
+                    <form 
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const formData = new FormData(e.currentTarget);
+                        const memoryText = formData.get("new_memory")?.toString().trim();
+                        if (memoryText) {
+                          setMemory(prev => {
+                            if (prev.includes(memoryText)) return prev;
+                            return [...prev, memoryText];
+                          });
+                          e.currentTarget.reset();
+                          addAutomationLog(`Manual memory fact inserted: "${memoryText}"`, "completed");
+                        }
+                      }}
+                      className="flex gap-1.5 pt-1.5"
+                    >
+                      <input 
+                        type="text" 
+                        name="new_memory"
+                        placeholder="Add new persistent memory fact..."
+                        className="flex-1 bg-slate-950 border border-slate-850 rounded-xl px-2.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-indigo-500 font-sans"
+                        required
+                      />
+                      <button 
+                        type="submit"
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-2.5 rounded-xl text-[10px] transition"
+                      >
+                        Add
+                      </button>
+                    </form>
                   </div>
 
-                  <div className="bg-slate-900 rounded-xl p-3 border border-slate-800 space-y-1">
-                    <h4 className="text-xs font-sans font-bold text-slate-200">Reset State</h4>
-                    <p className="text-[10px] text-slate-500 pb-2">Wipe conversation timeline and cognitive memory banks.</p>
+                  {/* Hard Reset State Block */}
+                  <div className="bg-slate-900/60 rounded-2xl p-4 border border-slate-800/80 space-y-1">
+                    <h4 className="text-xs font-sans font-bold text-slate-200">Reset System State</h4>
+                    <p className="text-[10px] text-slate-500 pb-2">Wipe conversation timeline and cognitive memory banks completely.</p>
                     <button 
                       onClick={() => {
-                        setMessages([]);
-                        setMemory([]);
-                        addAutomationLog("System and memory databases completely reset.", "completed");
-                        alert("Reset successful.");
+                        if (confirm("Are you sure you want to hard reset all configuration and chat memories?")) {
+                          setMessages([]);
+                          setMemory([]);
+                          addAutomationLog("System and memory databases completely reset.", "completed");
+                          alert("System reset completed.");
+                        }
                       }}
-                      className="w-full bg-red-600/20 border border-red-500/30 hover:bg-red-600/30 text-red-300 font-bold py-1.5 rounded-lg text-xs transition"
+                      className="w-full bg-red-600/10 border border-red-500/20 hover:bg-red-600/20 text-red-300 font-bold py-2 rounded-xl text-xs transition"
                     >
                       Hard Reset Space
                     </button>
@@ -1356,100 +1261,50 @@ export default function VirtualPhone({
               </div>
             )}
 
-            {/* Selected Camera visual preview thumb attachment */}
-            {capturedImage && (
-              <div className="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
-                <div className="flex items-center gap-2">
-                  <div className="w-10 h-10 rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
-                    <img src={capturedImage} alt="lens payload" className="w-full h-full object-cover" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-slate-300">Camera Lens Snapshot</p>
-                    <p className="text-[10px] text-slate-500">Sent with next visual prompt</p>
-                  </div>
-                </div>
-                <button 
-                  id="remove-captured-image-btn"
-                  onClick={() => setCapturedImage(null)} 
-                  className="text-slate-500 hover:text-red-400 transition"
+            {/* Minimal Distraction-Free Bottom Voice Console */}
+            <div className="flex flex-col items-center justify-center py-4 bg-slate-950/85 backdrop-blur-md border-t border-slate-900/40 relative z-30 space-y-3 px-4">
+              
+              {/* Single, Large 'Microphone' Button at the bottom center */}
+              <div className="relative flex items-center justify-center">
+                {/* Glowing and pulsating wave effect rings behind the Mic */}
+                <div className={`absolute w-24 h-24 rounded-full bg-cyan-500/5 filter blur-lg transition-all duration-1000 ${isListening ? "scale-125 bg-pink-500/10" : "scale-100"}`}></div>
+                
+                {isListening && (
+                  <>
+                    <div className="absolute w-20 h-20 bg-cyan-500/20 rounded-full animate-ping pointer-events-none"></div>
+                    <div className="absolute w-16 h-16 bg-indigo-500/15 rounded-full animate-pulse pointer-events-none"></div>
+                  </>
+                )}
+
+                <button
+                  id="phone-mic-trigger-btn"
+                  type="button"
+                  onClick={handleToggleMic}
+                  className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-500 transform active:scale-95 shadow-2xl z-10 ${
+                    isListening
+                      ? "bg-gradient-to-tr from-cyan-400 via-indigo-500 to-pink-500 scale-110 shadow-cyan-500/40 text-slate-950 font-extrabold"
+                      : "bg-slate-900 border-2 border-slate-800 hover:border-slate-700 text-cyan-400 hover:text-cyan-300 hover:shadow-cyan-500/5"
+                  }`}
+                  title={isListening ? "Stop listening" : "Speak to Auroza"}
                 >
-                  <X className="w-4 h-4" />
+                  <Mic className={`w-7 h-7 ${isListening ? "animate-pulse text-slate-950" : "text-cyan-400"}`} />
                 </button>
               </div>
-            )}
+              
+              {/* Feedback Sub-text displaying speaking/idle status in Urdu or English */}
+              <div className="text-center h-4 flex items-center justify-center">
+                <p className={`text-[10px] font-mono tracking-wide ${isListening ? "text-cyan-400 animate-pulse font-bold" : "text-slate-600"}`}>
+                  {isListening 
+                    ? (speechFeedback || "Listening... Speak now") 
+                    : "TAP TO TALK"
+                  }
+                </p>
+              </div>
 
-            {/* Quick Interactive Command Suggestion Bar */}
-            <div className="flex gap-1.5 overflow-x-auto custom-scrollbar pb-1">
-              {[
-                { label: "Facebook کھولو", text: "Open Facebook" },
-                { label: "احمد کو کال کرو", text: "Call Ahmed" },
-                { label: "WhatsApp پر میسج بھیجو", text: "Send message to Ahmed on WhatsApp" },
-                { label: "Settings کھولو", text: "Open settings" }
-              ].map((s, i) => (
-                <button 
-                  key={i}
-                  onClick={() => handleUserSubmit(s.text)}
-                  className="text-[10px] bg-slate-900 border border-slate-850 text-slate-400 rounded-full px-2.5 py-1 hover:text-slate-200 hover:border-slate-700 transition whitespace-nowrap"
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-
-            {/* ChatGPT Styled Message Box */}
-            <div className="flex items-center gap-2">
-              <button 
-                id="phone-camera-shortcut-btn"
-                onClick={() => {
-                  setActiveScreen("camera");
-                  addAutomationLog("User engaged hardware camera.", "completed");
-                }}
-                className="p-2 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-cyan-400 rounded-xl transition border border-slate-850/80"
-                title="Camera Vision Input"
-              >
-                <Camera className="w-4 h-4" />
-              </button>
-
-              <form 
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleUserSubmit(inputText);
-                }}
-                className="flex-1 flex items-center bg-slate-900 border border-slate-800/80 rounded-2xl px-3 py-1 focus-within:ring-2 focus-within:ring-cyan-500/50"
-              >
-                <input 
-                  id="phone-chat-text-input"
-                  type="text"
-                  placeholder={`Ask ${config.name}...`}
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  className="flex-1 bg-transparent py-2 text-xs text-slate-200 focus:outline-none placeholder:text-slate-500"
-                />
-
-                <div className="flex items-center gap-1.5 ml-2">
-                  <button 
-                    id="phone-mic-trigger-btn"
-                    type="button"
-                    onClick={handleToggleMic}
-                    className={`p-1.5 rounded-xl transition-all duration-300 ${isListening ? "bg-red-500 text-white animate-pulse shadow-lg shadow-red-500/50 scale-105" : "bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-755"}`}
-                    title={isListening ? "مائیکرو فون بند کریں" : "مائیکرو فون آن کریں"}
-                  >
-                    {isListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-                  </button>
-
-                  {inputText.trim() && (
-                    <button 
-                      id="phone-chat-submit-btn"
-                      type="submit"
-                      className="p-1.5 bg-gradient-to-tr from-cyan-500 to-indigo-500 text-slate-900 font-bold rounded-xl transition active:scale-95"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </form>
             </div>
           </div>
+          </>
+          )}
 
         </div>
 
@@ -1478,12 +1333,7 @@ export default function VirtualPhone({
 
       </div>
 
-      {/* Visual Canvas Backdrop Indicators */}
-      <div className="text-center mt-4">
-        <p className="text-[11px] font-mono text-slate-500">
-          Auroza Autopilot Engine. Simulated with Web Speech recognition.
-        </p>
-      </div>
+
     </div>
   );
 }

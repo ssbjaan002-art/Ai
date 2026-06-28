@@ -32,6 +32,76 @@ try {
   console.error("Failed to initialize GoogleGenAI:", error);
 }
 
+// Helper to retry Gemini API calls with exponential backoff on transient errors (e.g. 503, 429)
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  retries = 3,
+  delay = 1000
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (error: any) {
+    const errorStatus = error?.status || error?.statusCode || error?.error?.code || 0;
+    const errorMessage = error?.message || "";
+    const isTransient = 
+      errorStatus === 503 || 
+      errorStatus === 429 || 
+      errorStatus === 500 ||
+      errorMessage.includes("503") || 
+      errorMessage.includes("429") || 
+      errorMessage.includes("UNAVAILABLE") || 
+      errorMessage.includes("high demand") ||
+      errorMessage.includes("glitch") ||
+      errorMessage.includes("overloaded");
+
+    if (retries > 0 && isTransient) {
+      console.warn(`Gemini API transient error (${errorStatus || errorMessage}). Retrying in ${delay}ms... (${retries} retries left)`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return retryWithBackoff(fn, retries - 1, delay * 1.5);
+    }
+    throw error;
+  }
+}
+
+// Robust fallback model selector for high-availability
+async function generateWithModelFallback(options: any): Promise<any> {
+  // 1. Try with gemini-2.5-flash (highly stable, very high quotas, recommended standard)
+  try {
+    return await retryWithBackoff(() => 
+      ai!.models.generateContent({
+        ...options,
+        model: "gemini-2.5-flash"
+      }),
+      2,
+      800
+    );
+  } catch (err2_5: any) {
+    console.warn("gemini-2.5-flash failed, trying gemini-2.5-pro:", err2_5?.message || err2_5);
+    // 2. Fallback to gemini-2.5-pro
+    try {
+      return await retryWithBackoff(() => 
+        ai!.models.generateContent({
+          ...options,
+          model: "gemini-2.5-pro"
+        }),
+        2,
+        1000
+      );
+    } catch (err2_5pro: any) {
+      console.warn("gemini-2.5-pro failed, trying gemini-3.5-flash fallback:", err2_5pro?.message || err2_5pro);
+      // 3. Fallback to gemini-3.5-flash
+      return await retryWithBackoff(() => 
+        ai!.models.generateContent({
+          ...options,
+          model: "gemini-3.5-flash"
+        }),
+        2,
+        1500
+      );
+    }
+  }
+}
+
 // 1. Chat & Action Planning Endpoint
 app.post("/api/auroza/chat", async (req, res) => {
   const { message, history, permissions, memory, assistantName, language, voice } = req.body;
@@ -118,8 +188,7 @@ Your response MUST be a JSON object matching this schema:
       parts: [{ text: message }]
     });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateWithModelFallback({
       contents: formattedContents,
       config: {
         systemInstruction,
@@ -210,8 +279,7 @@ The user's query or prompt is: "${prompt || "Analyze this image and tell me what
 Respond directly and warmly in the user's selected language (${language || "English"}), commenting on the image's content. Keep the response compact and conversational.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateWithModelFallback({
       contents: {
         parts: [imagePart, { text: textPrompt }]
       },

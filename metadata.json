@@ -1,6 +1,6 @@
 {
   "name": "Auroza AI",
   "description": "Premium multi-lingual voice-first AI Assistant simulator with interactive Android automation and visual controls.",
-  "requestFramePermissions": ["camera"],
+  "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
